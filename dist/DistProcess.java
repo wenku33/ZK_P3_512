@@ -36,6 +36,12 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
     boolean isManager=false;
     boolean initialized=false;
 
+    final String distPath = "/dist11"; 
+    final String tasksPath = distPath + "/tasks";
+    final String workersPath = distPath + "/workers";
+    final String assignPath = distPath + "/assign";
+    final String managerPath = distPath + "/manager";
+
     DistProcess(String zkhost)
     {
         zkServer=zkhost;
@@ -53,12 +59,27 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
     {
         try
         {
+            System.out.println("Manager doesn't exist " + (zk.exists("/dist11/manager", false) == null));
             runForManager();	// See if you can become the manager (i.e, no other manager exists)
             isManager=true;
+            setupManager();
+            // To remove
             getTasks(); // Install monitoring on any new tasks that will be created.
                                     // TODO monitor for worker tasks?
+            System.out.println("DISTAPP : Role : " + " I will be functioning as " +(isManager?"manager":"worker"));
         }catch(NodeExistsException nee)
-        { isManager=false; } // TODO: What else will you need if this was a worker process?
+        { 
+            isManager=false; 
+            // setupWorker();
+            try {  
+                setupWorker();
+                System.out.println("DISTAPP : Role : " + " I will be functioning as " +(isManager?"manager":"worker"));
+
+            }catch(Exception e){
+                System.out.println(e);
+            }
+            
+        } // TODO: What else will you need if this was a worker process?
         catch(UnknownHostException uhe)
         { System.out.println(uhe); }
         catch(KeeperException ke)
@@ -66,9 +87,67 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
         catch(InterruptedException ie)
         { System.out.println(ie); }
 
-        System.out.println("DISTAPP : Role : " + " I will be functioning as " +(isManager?"manager":"worker"));
 
     }
+
+    void setupManager() throws KeeperException, InterruptedException {
+        createIfNotExists(distPath, new byte[0]);
+        createIfNotExists(tasksPath, new byte[0]);
+        createIfNotExists(workersPath, new byte[0]);
+        createIfNotExists(assignPath, new byte[0]);
+
+        zk.getChildren(workersPath, this, this, null);
+
+        // watch tasks list
+        zk.getChildren(tasksPath, this, this, null);
+
+        System.out.println("DISTAPP : Manager watching tasks and workers");
+    }
+
+    void setupWorker() throws KeeperException, InterruptedException {
+        createIfNotExists(distPath, new byte[0]);
+        createIfNotExists(tasksPath, new byte[0]);
+        createIfNotExists(workersPath, new byte[0]);
+        createIfNotExists(assignPath, new byte[0]);
+        
+        String myWorkerPath = workersPath + "/" + pinfo;
+        zk.create(myWorkerPath, "idle".getBytes(), Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
+        
+        // try {
+        //     zk.create(myWorkerPath, "idle".getBytes(), Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
+        // } catch (KeeperException.NodeExistsException nee) {
+        //     // if leftover node exists (shouldn't happen if no crash), delete and re-create
+        //     zk.delete(myWorkerPath, -1);
+        //     zk.create(myWorkerPath, "idle".getBytes(), Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);            
+        // }
+
+        // watch my assign node (existence)
+        watchMyAssignment();
+
+        System.out.println("DISTAPP : Worker registered: " + myWorkerPath);
+    }
+
+    void createIfNotExists(String path, byte[] data) {
+        try {
+            if (zk.exists(path, false) == null) {
+                zk.create(path, data, Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+            }
+        } catch (KeeperException.NodeExistsException ignore) {
+        } catch (Exception e) {
+            System.err.println("DISTAPP : createIfNotExists error for " + path + " : " + e);
+        }
+    }
+
+    void watchMyAssignment() {
+        String myAssign = assignPath + "/" + pinfo;
+        try {
+            // watch for create/delete on this node. Currently, not yet created
+            zk.exists(myAssign, this); 
+        } catch (Exception e) {
+            System.err.println("DISTAPP : watchMyAssignment error: " + e);
+        }
+    }
+
 
     // Manager fetching task znodes...
     void getTasks()
