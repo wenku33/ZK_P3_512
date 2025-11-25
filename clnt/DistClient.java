@@ -159,6 +159,7 @@ public class DistClient implements Watcher, AsyncCallback.StatCallback, AsyncCal
         // Also pass the task object to be send to the distributed platform.
         DistClient dt = new DistClient(System.getenv("ZKSERVER"), mcpi);
 
+        System.out.println("print0 in main");
         // Initiate the zk related workflow.
         dt.startClient();
 
@@ -173,6 +174,7 @@ public class DistClient implements Watcher, AsyncCallback.StatCallback, AsyncCal
             catch(InterruptedException ie){}
         }
 
+        System.out.println("Computation Results:");
         // get back our task object
         mcpi = (MCPi)dt.getDistTask();
         // And display the results.
