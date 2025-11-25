@@ -1,3 +1,4 @@
 *.class
 runclnt.sh
 runsrvr.sh
+*/data

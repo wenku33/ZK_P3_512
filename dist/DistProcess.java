@@ -88,7 +88,6 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
             isManager=true;
             setupManager();
             List<String> workers = zk.getChildren(workersPath, false);
-            // System.out.println("has mngr been added to children? "+workers.get(0));
             System.out.println("DISTAPP : Role : " + " I will be functioning as " +(isManager?"manager":"worker"));
         }catch(NodeExistsException nee)
         { 
@@ -136,17 +135,9 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
         
         String myWorkerPath = workersPath + "/" + pinfo;
         zk.create(myWorkerPath, "idle".getBytes(), Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
-        
-        // try {
-        //     zk.create(myWorkerPath, "idle".getBytes(), Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
-        // } catch (KeeperException.NodeExistsException nee) {
-        //     // if leftover node exists (shouldn't happen if no crash), delete and re-create
-        //     zk.delete(myWorkerPath, -1);
-        //     zk.create(myWorkerPath, "idle".getBytes(), Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);            
-        // }
 
         // watch my assign node (existence)
-        watchMyAssignment();
+        watchMyAssignment(pinfo);
 
         System.out.println("DISTAPP : Worker registered: " + myWorkerPath);
     }
@@ -162,8 +153,8 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
         }
     }
 
-    void watchMyAssignment() {
-        String myAssign = assignPath + "/" + pinfo;
+    void watchMyAssignment(String host) {
+        String myAssign = assignPath + "/" + host;
         try {
             // watch for create/delete on this node. Currently, not yet created
             zk.exists(myAssign, this); 
@@ -202,18 +193,12 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
                 initialize();
                 initialized = true;
             }
-            // Is this okay?
             return;
         }
 
         // Manager should be notified if any new znodes are added to tasks.
         if(e.getType() == Watcher.Event.EventType.NodeChildrenChanged && e.getPath()!=null)
         {   
-            try{
-                List<String> workers = zk.getChildren(workersPath, false);
-                // System.out.println("has mngr been added to children? When new task "+workers.get(0)); 
-            }catch(Exception exo) {}
-            
             // There has been changes to the children of the node.
             // We are going to re-install the Watch as well as request for the list of the children.
             if (e.getPath().equals(tasksPath)) {
@@ -241,21 +226,31 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
 
         
         if (e.getType() == Watcher.Event.EventType.NodeDeleted && e.getPath() != null) {
-            String myAssign = assignPath + "/" + pinfo;
-            if (e.getPath().equals(myAssign)) {
-                // There's a finally in onAssignmentAppeared() that reinstates anyways
-                // watchMyAssignment();
-                // Check for more jobs
+            // Check for more jobs
+            // Temporary thread to slow down the assignments, better for testing
+            new Thread(() -> {
+                try {
+                    Thread.sleep(2000); // 2 seconds
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+
+                System.out.println("\nDISTAPP : " + "isManager: " + isManager + " assignment for" 
+                    + e.getPath() + " ended. Check for unassigned tasks that can be assigned");
+                try{
+                    List<String> taskChildren = zk.getChildren(tasksPath, false);
+                    startAssignment(taskChildren);
+                } catch(Exception ex) {ex.printStackTrace();}
                 
-                // try{
-                //     if(isManager) {
-                //         List<String> taskChildren = zk.getChildren(tasksPath, false);
-                //         startAssignment(taskChildren);
-                //     }
-                // } catch(Exception ex) {ex.printStackTrace();}
-                
-                return;
-            }
+            }).start();
+            return;
+            // System.out.println("DISTAPP : " + "isManager: " + isManager + "assignment for" 
+            //         + e.getPath() + " ended. Check for unassigned tasks that can be assigned");
+            // try{
+            //     List<String> taskChildren = zk.getChildren(tasksPath, false);
+            //     startAssignment(taskChildren);
+            // } catch(Exception ex) {ex.printStackTrace();}
+            // return;
         }
     }
 
@@ -263,27 +258,13 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
     void onAssignmentAppeared() {
         final String myAssign = assignPath + "/" + pinfo;
         // To watch for myAssign Deletion, to trigger more task assignments if necessary.
-        watchMyAssignment();
         workerExecutor.submit(() -> {
             try {
                 // Read assign data
                 byte[] assignData = zk.getData(myAssign, false, null);
-                // if (assignData == null) {
-                //     System.out.println("Somehow assign node has no data (no job).");
-                //     watchMyAssignment();
-                //     return;
-                // }
                 String payload = new String(assignData);
                 // payload = taskNodeName::base64(serialized)
                 int sep = payload.indexOf("::");
-                // if (sep == -1) {
-                //     System.err.println("DISTAPP : Invalid assign payload: " + payload);
-                //     // cleanup & rearm
-                //     try { zk.delete(myAssign, -1); } catch(Exception ex){}
-                //     zk.setData(workersPath + "/" + pinfo, "idle".getBytes(), -1);
-                //     watchMyAssignment();
-                //     return;
-                // }
                 String taskNodeName = payload.substring(0, sep);
                 String base64 = payload.substring(sep + 2);
                 byte[] taskSerial = Base64.getDecoder().decode(base64);
@@ -311,9 +292,10 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
                     zk.setData(resultPath, resultBytes, -1);
                 }
 
+                zk.setData(workersPath + "/" + pinfo, "idle".getBytes(), -1);
                 // cleanup: remove assign node and mark self idle
                 try { zk.delete(myAssign, -1); } catch(Exception ex){ex.printStackTrace();}
-                zk.setData(workersPath + "/" + pinfo, "idle".getBytes(), -1);
+                
 
                 System.out.println("DISTAPP : Worker " + pinfo + " finished task " + taskNodeName);
 
@@ -329,7 +311,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
                 } catch (Exception ex) {}
             } finally {
                 // re-arm watch whether or not we succeeded
-                watchMyAssignment();
+                watchMyAssignment(pinfo);
             }
         });
     }
@@ -371,13 +353,11 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
             } catch (Exception e) {
                 e.printStackTrace();
             }
-            
-            // get tasks children
-            // do the assigning with tasks children
         }   
     }
 
     public void startAssignment(List<String> children) {
+        Collections.sort(children);
         for(String c: children)
         {
             System.out.println(c);
@@ -426,10 +406,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
         // Do we need threads here?
         try{
             List<String> workers = zk.getChildren(workersPath, false);
-            // if (!workers.isEmpty()) {continue;} 
-
             for (String w : workers) {
-                System.out.println("Assigning for worker "+ w);
                 String wPath = workersPath + "/" + w;
                 byte[] data = zk.getData(wPath, false, null);
                 String status = new String(data); //String status = data == null ? "idle" : new String(data);
@@ -442,6 +419,8 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
                     try {
                         // zk.create(assignNode, taskSerial, Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
                         zk.create(assignNode, payload.getBytes(), Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
+                        // Watch for the deletion of assignNode to assign unassigned tasks
+                        watchMyAssignment(w);
                         // mark worker busy
                         zk.setData(wPath, "busy".getBytes(), -1);
                         // mark task assigned
@@ -473,7 +452,6 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
         dt.startProcess();
 
         //Replace this with an approach that will make sure that the process is up and running forever.
-        // Thread.sleep(20000); 
         Object lock = new Object();
         synchronized (lock) {
             lock.wait();
