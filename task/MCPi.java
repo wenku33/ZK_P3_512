@@ -34,6 +34,9 @@ public class MCPi implements DistTask {
     private double calcPi(long n) throws InterruptedException {
         System.out.println("DistTask: calcPi : number of samples : " + n + ", start : " + start);
         for (long i = start; i < n; i++) {
+            if (i % 10000 == 0) {
+                System.out.println(i);
+            }
             double x = Math.random(), y = Math.random();
             if (x * x + y * y <= 1) {
                 // point is inside the circle
